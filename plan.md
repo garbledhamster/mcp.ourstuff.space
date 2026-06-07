@@ -22,10 +22,10 @@ Make `mcp.ourstuff.space` the public entry point for Ourstuff MCP tools and skil
 - [x] Create this root plan in `mcp.ourstuff.space`.
 - [x] Move tracked and unignored current `C:\Github\skills` content into `skills/`.
 - [x] Move tracked and unignored current `C:\Github\tools` content into `tools/`.
-- [ ] Verify migrated package checks from the new paths.
-- [ ] Commit and push `mcp.ourstuff.space`.
-- [ ] Remove the old local `C:\Github\skills` and `C:\Github\tools` repositories after the destination push succeeds.
-- [ ] Delete the old GitHub repositories after the destination push succeeds and local cleanup is complete.
+- [x] Verify migrated package checks from the new paths.
+- [x] Commit and push `mcp.ourstuff.space`.
+- [x] Remove the old local `C:\Github\skills` and `C:\Github\tools` repositories after the destination push succeeds.
+- [ ] Delete the old GitHub repositories after the destination push succeeds and local cleanup is complete. Blocked until GitHub CLI auth has the `delete_repo` scope.
 
 ## Verification Targets
 
@@ -33,6 +33,13 @@ Make `mcp.ourstuff.space` the public entry point for Ourstuff MCP tools and skil
 - `skills/skill-registry-mcp` package checks
 - `tools/local-ai-brain` install or test checks
 - `git status` confirms old repos are no longer needed only after the destination repo is pushed.
+
+Latest migration verification:
+
+- `npm ci`, `npm run build`, and `npm test` passed in `skills/skill-registry-mcp`.
+- `.\scripts\Test-LinearThinkingSkills.ps1` passed in `skills/linear-thinking`.
+- `python install.py --what-if` passed in `tools/local-ai-brain`.
+- `python -m pytest` could not run because the active Python install did not have `pytest`.
 
 ## Cleanup Policy
 
