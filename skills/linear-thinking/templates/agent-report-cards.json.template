@@ -1,0 +1,17 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "cards": [
+    {
+      "agentId": "",
+      "pairId": "",
+      "role": "",
+      "phase": "",
+      "grade": "",
+      "evidence": [],
+      "keepDoing": "",
+      "improveNextTime": "",
+      "futurePromptInstruction": "",
+      "memoryDestination": ""
+    }
+  ]
+}

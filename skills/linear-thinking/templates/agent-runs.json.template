@@ -1,0 +1,28 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "memoryLane": {
+    "backend": "",
+    "projectId": "",
+    "runId": "",
+    "fallbackPath": ".local\\meetings\\{{DateSlug}}\\"
+  },
+  "runs": [
+    {
+      "taskId": "",
+      "phase": "",
+      "agentId": "",
+      "pairId": "",
+      "role": "",
+      "requestedExecutionSystem": "",
+      "requestedModel": "",
+      "requestedReasoningEffort": "",
+      "actualExecutionSystem": "",
+      "actualModel": "unknown",
+      "actualReasoningEffort": "",
+      "fallbackReason": "",
+      "artifacts": [],
+      "checksRun": [],
+      "summary": ""
+    }
+  ]
+}

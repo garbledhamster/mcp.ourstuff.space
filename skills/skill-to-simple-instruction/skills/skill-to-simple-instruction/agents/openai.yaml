@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill To Simple Instruction"
+  short_description: "Turn skills into simple paste-ready instructions"
+  default_prompt: "Use $skill-to-simple-instruction to turn this skill into a simple instruction I can paste into ChatGPT or share."
+
+policy:
+  allow_implicit_invocation: true

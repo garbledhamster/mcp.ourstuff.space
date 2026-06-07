@@ -1,0 +1,27 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "pass": 3,
+  "hat": "blue",
+  "synthesis": "",
+  "verificationAgainstRequest": "",
+  "remainingUncertainties": [],
+  "implementationContinuity": {
+    "default": "same-pairs",
+    "handoffToUnrelatedAgents": false,
+    "lanes": []
+  },
+  "durableMemoryDecisions": [],
+  "memoryFilesChanged": [],
+  "modelProvenanceSummary": [],
+  "agentReportCards": [
+    {
+      "agentId": "",
+      "pairId": "",
+      "grade": "",
+      "evidence": [],
+      "keepDoing": "",
+      "improveNextTime": "",
+      "futurePromptInstruction": ""
+    }
+  ]
+}

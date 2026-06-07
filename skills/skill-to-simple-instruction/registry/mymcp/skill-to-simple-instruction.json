@@ -1,0 +1,27 @@
+{
+  "id": "garbledhamster__skill-to-simple-instruction",
+  "classifier": "PROMPTING",
+  "sourceOwner": "garbledhamster",
+  "slug": "skill-to-simple-instruction",
+  "title": "skill-to-simple-instruction",
+  "uri": "skills://PROMPTING/garbledhamster/skill-to-simple-instruction",
+  "description": "Converts agent skills, workflows, or long local instructions into concise paste-ready instructions for ChatGPT, Custom GPTs, other assistants, myMCP registry entries, or human sharing while removing local-only agent mechanics.",
+  "tags": [
+    "prompting",
+    "skills",
+    "chatgpt",
+    "custom-instructions",
+    "mymcp"
+  ],
+  "repository": "https://github.com/garbledhamster/skills",
+  "packagePath": "skill-to-simple-instruction",
+  "skillPath": "skill-to-simple-instruction/skills/skill-to-simple-instruction",
+  "triggers": [
+    "skill to simple instruction",
+    "turn this skill into a prompt",
+    "make this skill ChatGPT-ready",
+    "write custom instructions from this skill",
+    "make a shareable prompt from this workflow"
+  ],
+  "status": "local-prepared"
+}

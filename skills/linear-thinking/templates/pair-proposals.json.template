@@ -1,0 +1,24 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "pass": 1,
+  "proposals": [
+    {
+      "pairId": "",
+      "pair": "",
+      "mindsets": [],
+      "workingQuestion": "",
+      "modelProvenance": {
+        "requestedExecutionSystem": "",
+        "requestedModel": "",
+        "actualExecutionSystem": "",
+        "actualModel": "unknown",
+        "memoryBackend": "",
+        "memoryRunId": ""
+      },
+      "proposal": "",
+      "whyThisIsTheRightMove": "",
+      "whatWeCanHelpImplement": [],
+      "memoryCandidates": []
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "id": "garbledhamster__linear-thinking-agents",
+  "classifier": "PLANNING",
+  "sourceOwner": "garbledhamster",
+  "slug": "linear-thinking-agents",
+  "title": "linear-thinking-agents",
+  "uri": "skills://PLANNING/garbledhamster/linear-thinking-agents",
+  "description": "Runs three-pass linear thinking meetings with six mindsets in three paired agents. Use when a plan or decision needs a Blue/Logos orchestrator to announce the working path, pause for roster edits, run paired proposals, shuffle reviews, final synthesis, dashboard-ready JSONL events, durable local memory decisions, and the same pairs as implementation lanes.",
+  "tags": [
+    "planning",
+    "six-hats",
+    "paired-agents",
+    "cross-llm"
+  ],
+  "repository": "https://github.com/garbledhamster/skills",
+  "packagePath": "linear-thinking",
+  "skillPath": "linear-thinking/skills/linear-thinking-agents",
+  "bundledSupport": [
+    {
+      "slug": "linear-thinking-expert-builder",
+      "path": "linear-thinking/skills/linear-thinking-expert-builder",
+      "role": "supporting"
+    }
+  ],
+  "triggers": [
+    "linear thinking agents",
+    "six hats",
+    "thinking hats",
+    "roundtable",
+    "run the hats"
+  ],
+  "status": "local-prepared"
+}

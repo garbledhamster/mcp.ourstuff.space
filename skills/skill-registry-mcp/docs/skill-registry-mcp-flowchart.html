@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skill Registry MCP Flow Chart</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --ink: #172033;
+        --muted: #5f6b7a;
+        --line: #d9dee8;
+        --accent: #2563eb;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+
+      main {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 32px 0 48px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 30px;
+        line-height: 1.15;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin: 28px 0 12px;
+        font-size: 18px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      p,
+      li {
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      code {
+        color: var(--accent);
+        background: #eef4ff;
+        border: 1px solid #d7e4ff;
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+
+      .diagram {
+        overflow: auto;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+      }
+
+      .evidence {
+        background: #101827;
+        color: #dbe7ff;
+        border-radius: 8px;
+        padding: 16px;
+        overflow: auto;
+      }
+
+      .evidence code {
+        color: inherit;
+        background: transparent;
+        border: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Skill Registry MCP Flow Chart</h1>
+      <p>Endpoint: <code>https://skill-registry-mcp.jrice.workers.dev/mcp</code></p>
+
+      <h2>C4 Context</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart LR
+  user((Agent user))
+  mcpClient["MCP client<br/>ChatGPT, Codex, SDK client"]
+  admin["Registry admin<br/>curates skill bundles"]
+  uploader["Skill source repos<br/>approved upstream bundles"]
+
+  system["Skill Registry MCP<br/>Cloudflare Worker"]
+  d1[("Cloudflare D1<br/>skill registry")]
+  cache[("Local stdio cache<br/>~/.skill-registry-mcp/cache.json")]
+
+  user -- "asks for skill discovery/read" --> mcpClient
+  mcpClient -- "MCP JSON-RPC POST /mcp" --> system
+  system -. "approved-only list/read/search" .-> d1
+  system -- "resources/tools results" --> mcpClient
+
+  admin -- "admin token + /admin/*" --> system
+  uploader -- "packaged skills/import payload" --> admin
+  system -. "pending + approved versions" .-> d1
+
+  mcpClient -. "optional local stdio adapter" .-> cache
+  cache -- "proxies/syncs via remote /mcp" --> system
+        </pre>
+      </div>
+
+      <h2>C4 Container View</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  subgraph client["Client Boundary"]
+    remoteClient["Remote MCP client"]
+    stdioAdapter["Local stdio adapter<br/>dist/src/stdio-adapter.js"]
+  end
+
+  subgraph worker["Cloudflare Worker"]
+    router["HTTP router<br/>src/worker.ts"]
+    authMeta["OAuth metadata routes<br/>/.well-known/*"]
+    mcpAuth["MCP auth gate<br/>public-read or bearer token"]
+    mcpDispatch["MCP dispatcher<br/>src/mcp.ts"]
+    adminApi["Admin API<br/>/admin/*"]
+  end
+
+  subgraph data["Data Boundary"]
+    d1[("D1 registry")]
+  end
+
+  remoteClient -->|"POST /mcp JSON-RPC"| router
+  stdioAdapter -->|"POST /mcp JSON-RPC<br/>optional bearer token"| router
+  router -->|"GET /health"| router
+  router -->|"GET /.well-known/*"| authMeta
+  router -->|"POST /mcp"| mcpAuth
+  mcpAuth -->|"authorized or public read"| mcpDispatch
+  mcpDispatch -.->|"listSkills/getApprovedBundle"| d1
+  router -->|"admin token /admin/*"| adminApi
+  adminApi -.->|"import/list/approve/reject/delete"| d1
+        </pre>
+      </div>
+
+      <h2>BPMN-Lite: MCP Read Flow</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  start((MCP client starts))
+  postInit["POST /mcp<br/>JSON-RPC initialize"]
+  route["Worker routes request"]
+  methodCheck{HTTP method is POST?}
+  publicRead{SKILL_REGISTRY_MCP_PUBLIC_READ true?}
+  bearer{Valid read/admin bearer token?}
+  authError["Return 401<br/>WWW-Authenticate resource metadata"]
+  parse{Valid JSON-RPC?}
+  dispatch["Dispatch MCP method"]
+  init["initialize<br/>return protocolVersion 2025-06-18<br/>tools/resources capabilities"]
+  listTools["tools/list<br/>return list_skills, get_skill,<br/>search_skills, sync_skills"]
+  listResources["resources/list<br/>return skills:// resources"]
+  callTool["tools/call<br/>query approved skills only"]
+  readResource["resources/read<br/>return approved skill markdown"]
+  d1[("D1 registry<br/>approved skills")]
+  response["Return JSON-RPC result"]
+  end((Client receives result))
+
+  start --> postInit --> route --> methodCheck
+  methodCheck -- "no" --> methodError["405 MCP endpoint expects JSON-RPC POST"] --> end
+  methodCheck -- "yes" --> publicRead
+  publicRead -- "yes" --> parse
+  publicRead -- "no" --> bearer
+  bearer -- "no" --> authError --> end
+  bearer -- "yes" --> parse
+  parse -- "no" --> parseError["JSON-RPC parse error -32700"] --> end
+  parse -- "yes" --> dispatch
+  dispatch --> init --> response
+  dispatch --> listTools --> response
+  dispatch --> listResources
+  listResources -.->|"listSkills approvedOnly"| d1
+  listResources --> response
+  dispatch --> callTool
+  callTool -.->|"list/search/get approvedOnly"| d1
+  callTool --> response
+  dispatch --> readResource
+  readResource -.->|"getApprovedBundleByUri"| d1
+  readResource --> response
+  response --> end
+        </pre>
+      </div>
+
+      <h2>BPMN-Lite: Admin Approval Flow</h2>
+      <div class="diagram">
+        <pre class="mermaid">
+flowchart TB
+  adminStart((Admin starts))
+  package["Package skill bundle"]
+  import["POST /admin/imports<br/>admin bearer token"]
+  adminAuth{Admin token valid?}
+  validate["Validate import body"]
+  pending[("D1 pending version")]
+  review["GET /admin/pending<br/>GET /admin/skills/:id/diff"]
+  decision{Approve?}
+  approve["POST /admin/skills/:id/approve"]
+  reject["POST /admin/skills/:id/reject"]
+  approved[("D1 approved version")]
+  rejected[("D1 rejected version")]
+  visible["Visible through /mcp<br/>tools + resources"]
+  adminEnd((Flow ends))
+
+  adminStart --> package --> import --> adminAuth
+  adminAuth -- "no" --> denied["401/403 admin route denied"] --> adminEnd
+  adminAuth -- "yes" --> validate --> pending --> review --> decision
+  decision -- "yes" --> approve --> approved --> visible --> adminEnd
+  decision -- "no" --> reject --> rejected --> adminEnd
+        </pre>
+      </div>
+
+      <h2>Live Probe Evidence</h2>
+      <pre class="evidence"><code>GET /mcp
+  405 Method Not Allowed
+
+POST /mcp initialize
+  200 OK
+  serverInfo.name = skill-registry-mcp
+  serverInfo.version = 0.1.0
+  protocolVersion = 2025-06-18
+  capabilities = tools, resources
+
+POST /mcp tools/list
+  tools = list_skills, get_skill, search_skills, sync_skills
+
+POST /mcp resources/list
+  returned approved skills:// resources</code></pre>
+    </main>
+
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+      mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: "loose",
+        theme: "base",
+        themeVariables: {
+          primaryColor: "#eff6ff",
+          primaryTextColor: "#172033",
+          primaryBorderColor: "#7aa2f7",
+          lineColor: "#64748b",
+          secondaryColor: "#f8fafc",
+          tertiaryColor: "#ffffff",
+          fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+        }
+      });
+    </script>
+  </body>
+</html>

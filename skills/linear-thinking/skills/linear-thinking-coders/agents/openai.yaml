@@ -1,0 +1,10 @@
+interface:
+  display_name: "Linear Thinking Coders"
+  short_description: "Paired frontend design council and coders."
+  default_prompt: "Use $linear-thinking-coders to run a paired frontend design council, synthesize a design doc, auto-code with paired lanes, and capture team failure notes."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "multi_agent_v1"
+      description: "Spawns and coordinates paired design, coding, review, and verification agents."

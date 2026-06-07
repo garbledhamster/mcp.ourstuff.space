@@ -1,0 +1,76 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "topic": "{{Topic}}",
+  "started": "{{Started}}",
+  "path": ".local\\meetings\\{{DateSlug}}\\",
+  "liveAgentLimit": {
+    "orchestrator": 1,
+    "pairedAgents": 3
+  },
+  "mindsets": [
+    "Operator",
+    "Engineer",
+    "Architect",
+    "Strategist",
+    "Steward",
+    "Philosopher"
+  ],
+  "pairs": [
+    {
+      "pairId": "build",
+      "name": "Build Pair",
+      "mindsets": ["Operator", "Engineer"],
+      "workingQuestion": ""
+    },
+    {
+      "pairId": "shape",
+      "name": "Shape Pair",
+      "mindsets": ["Architect", "Strategist"],
+      "workingQuestion": ""
+    },
+    {
+      "pairId": "guardrail",
+      "name": "Guardrail Pair",
+      "mindsets": ["Steward", "Philosopher"],
+      "workingQuestion": ""
+    }
+  ],
+  "firstBlue": {
+    "meetingPathAnnounced": false,
+    "pairRosterProposed": false,
+    "passPlanProposed": false,
+    "pausedForUserEdits": false,
+    "dynamicPairOverrideReason": ""
+  },
+  "memoryLane": {
+    "backend": "",
+    "projectId": "",
+    "runId": "",
+    "contextPackQuery": "",
+    "fallbackPath": ".local\\meetings\\{{DateSlug}}\\"
+  },
+  "modelProvenance": {
+    "ledgerPath": "agent-runs.json",
+    "reportCardsPath": "agent-report-cards.json",
+    "recordUnknownActualModelRatherThanGuessing": true
+  },
+  "implementationContinuity": {
+    "default": "same-pairs",
+    "userRequestedPairSwap": false,
+    "handoffToUnrelatedAgents": false,
+    "lanes": [
+      {
+        "pairId": "build",
+        "owns": "implementation scope matching the Build Pair proposal"
+      },
+      {
+        "pairId": "shape",
+        "owns": "implementation scope matching the Shape Pair proposal"
+      },
+      {
+        "pairId": "guardrail",
+        "owns": "implementation scope matching the Guardrail Pair proposal"
+      }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "pass": 2,
+  "reviews": [
+    {
+      "reviewPairId": "",
+      "reviewPair": "",
+      "reviewMindsets": [],
+      "reviewedPairId": "",
+      "modelProvenance": {
+        "requestedExecutionSystem": "",
+        "requestedModel": "",
+        "actualExecutionSystem": "",
+        "actualModel": "unknown",
+        "memoryBackend": "",
+        "memoryRunId": ""
+      },
+      "critique": "",
+      "clarification": "",
+      "appendedChangeProposal": "",
+      "memoryCandidates": []
+    }
+  ]
+}

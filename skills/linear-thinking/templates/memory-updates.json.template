@@ -1,0 +1,11 @@
+{
+  "meetingId": "{{MeetingId}}",
+  "approvedWrites": [
+    {
+      "expertId": "",
+      "file": "",
+      "summary": ""
+    }
+  ],
+  "rejectedCandidates": []
+}
