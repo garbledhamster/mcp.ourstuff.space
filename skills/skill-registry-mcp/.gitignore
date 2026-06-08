@@ -1,9 +1,0 @@
-node_modules/
-dist/
-.wrangler/
-.dev.vars
-.env
-tmp/
-coverage/
-*.log
-secret-scan.json
