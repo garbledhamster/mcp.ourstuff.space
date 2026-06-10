@@ -9,8 +9,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 MIN_PYTHON = (3, 10)
@@ -19,6 +21,18 @@ AGENTS_BLOCK_START = "<!-- LOCAL_AI_BRAIN_PROJECT_START -->"
 AGENTS_BLOCK_END = "<!-- LOCAL_AI_BRAIN_PROJECT_END -->"
 MCP_REGISTRY_NAME = "local-ai-brain-tools.json"
 MCP_ADAPTER_NAME = "project_mcp.py"
+DEPLOY_REGISTRY_PATH = Path.home() / ".agents" / "local-ai-brain" / "deploys.json"
+LAIB_MANAGED_MARKER = "local-ai-brain-managed"
+BUILTIN_SKILL_NAMES = [
+    "Ourstuff LAIB Optimize Main",
+    "Ourstuff LAIB Optimize Project",
+    "Ourstuff LAIB Index",
+]
+BUILTIN_SKILL_SLUGS = {
+    "Ourstuff LAIB Optimize Main": "ourstuff-laib-optimize-main",
+    "Ourstuff LAIB Optimize Project": "ourstuff-laib-optimize-project",
+    "Ourstuff LAIB Index": "ourstuff-laib-index",
+}
 WORK_FILE_PATTERN = "NNN_slug.ext"
 WORK_FILE_EXAMPLE = "001_file-use-name.md"
 WORK_FILE_EXCLUDED_DIRS = ("scripts", "artifacts", "archive", "brain", "mcp", "meetings", "tools")
@@ -34,6 +48,10 @@ LOCAL_AI_BRAIN_ACTIONS = [
     ("proof-report", "Report project Local AI Brain proof metrics.", "read_only"),
     ("rebuild-index", "Rebuild this project's Local AI Brain search index.", "write_safe"),
     ("codex-title-distill", "Run deterministic Codex title distill through this project brain.", "write_safe"),
+    ("resolve-brain", "Resolve the explicit, nearest, recent, or main Local AI Brain target.", "read_only"),
+    ("optimize-main", "Optimize the main Local AI Brain.", "write_safe"),
+    ("optimize-project", "Optimize the nearest or selected project Local AI Brain.", "write_safe"),
+    ("index", "Rebuild the selected Local AI Brain index.", "write_safe"),
 ]
 
 
@@ -56,6 +74,7 @@ class ProjectInstallPlan:
     mcp_adapter_path: Path
     brain_scope: str
     mcp_tool_prefix: str
+    register_agents: bool
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,6 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     if command == "rollback":
         args = build_rollback_parser().parse_args(effective_argv[1:])
         return run_rollback_from_args(args)
+    if command in {"resolve-brain", "optimize-main", "optimize-project", "index"}:
+        args = build_ops_parser(command).parse_args(effective_argv[1:])
+        if command == "resolve-brain":
+            return run_resolve_brain(args)
+        if command == "optimize-main":
+            return run_optimize_scope(args, force_scope="main")
+        if command == "optimize-project":
+            return run_optimize_scope(args, force_scope="project")
+        return run_index_scope(args, force_scope="")
     if "--menu" in effective_argv:
         return interactive_cli(parser)
 
@@ -119,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["windows", "macos", "linux"],
         default="",
         help="Override platform detection for dry-run/testing.",
+    )
+    parser.add_argument("--mcp-name", default="", help="Override MCP server name.")
+    parser.add_argument(
+        "--no-register-agents",
+        action="store_true",
+        help="Skip MCP agent config registration for Codex/Copilot/OpenCode/Claude.",
     )
     return parser
 
@@ -366,10 +400,12 @@ def run_local_brain_from_args(argv: list[str]) -> int:
                 project_root=args.project_root,
                 source_dir=args.source_dir,
                 brain_scope=args.brain_scope,
+                mcp_name="",
                 platform="",
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
+                no_register_agents=False,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -389,10 +425,12 @@ def open_terminal_from_args(argv: list[str]) -> int:
                 project_root=args.project_root,
                 source_dir=args.source_dir,
                 brain_scope=args.brain_scope,
+                mcp_name="",
                 platform="",
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
+                no_register_agents=False,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -412,10 +450,12 @@ def open_ui_from_args(argv: list[str]) -> int:
                 project_root=args.project_root,
                 source_dir=args.source_dir,
                 brain_scope=args.brain_scope,
+                mcp_name="",
                 platform="",
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
+                no_register_agents=False,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -466,6 +506,10 @@ def ensure_project_ready(plan: ProjectInstallPlan, force: bool, doctor: bool) ->
         write_mcp_registration(plan)
     if agents_missing or force or package_missing:
         write_agents_file(plan)
+    deploy_builtin_skills(plan)
+    if plan.register_agents:
+        register_agent_configs(plan)
+    record_deploy(plan)
 
 
 def agents_block_exists(plan: ProjectInstallPlan) -> bool:
@@ -524,7 +568,104 @@ def build_rollback_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-dir", default="", help="Source folder for this installer. Defaults to the commander folder.")
     parser.add_argument("--what-if", action="store_true", help="Show what would happen without removing files.")
     parser.add_argument("--yes", action="store_true", help="Confirm destructive rollback without an interactive prompt.")
+    parser.add_argument("--brain-scope", choices=["main", "project"], default="", help="Rollback target scope.")
+    parser.add_argument("--mcp-name", default="", help="Rollback only this MCP name when provided.")
     return parser
+
+
+def build_ops_parser(command: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"{CANONICAL_INSTALLER_NAME} {command}")
+    parser.add_argument("--project-root", default="", help="Explicit project root.")
+    parser.add_argument("--brain-scope", choices=["main", "project"], default="", help="Explicit scope override.")
+    parser.add_argument("--mcp-name", default="", help="Explicit MCP name override.")
+    parser.add_argument("--json", action="store_true", help="Print JSON output.")
+    parser.add_argument("--apply", action="store_true", help="Apply optimizer changes where supported.")
+    parser.add_argument("--what-if", action="store_true", help="Preview optimizer actions where supported.")
+    parser.add_argument("--db", default="", help="Optional explicit brain.db path.")
+    parser.add_argument("--lookup-event-retention-days", type=int, default=30)
+    parser.add_argument("--keep-lookup-events", type=int, default=200)
+    parser.add_argument("--source-file-retention-days", type=int, default=30)
+    parser.add_argument("--empty-record-retention-days", type=int, default=7)
+    parser.add_argument("--drop-missing-artifacts", action="store_true")
+    parser.add_argument("--no-vacuum", action="store_true")
+    parser.add_argument("--no-backup", action="store_true")
+    parser.add_argument("--main-fallback", action="store_true", help="Allow main fallback when resolving project commands.")
+    return parser
+
+
+def run_resolve_brain(args: argparse.Namespace) -> int:
+    resolved = resolve_brain_for_operation(
+        explicit_root=args.project_root,
+        explicit_scope=args.brain_scope,
+        explicit_mcp_name=args.mcp_name,
+        require_project=False,
+        allow_main_fallback=True,
+    )
+    payload = {
+        "scope": resolved.brain_scope,
+        "root": str(resolved.project_root),
+        "mcp_name": resolved.mcp_tool_prefix,
+        "scripts_dir": str(resolved.scripts_dir),
+        "data_dir": str(resolved.data_dir),
+        "db_path": str(resolved.db_path),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        for key, value in payload.items():
+            print(f"{key}: {value}")
+    touch_deploy_last_used(resolved.project_root, resolved.brain_scope, resolved.mcp_tool_prefix)
+    return 0
+
+
+def run_optimize_scope(args: argparse.Namespace, force_scope: str) -> int:
+    explicit_scope = args.brain_scope or force_scope
+    allow_main = explicit_scope == "main" or bool(args.main_fallback)
+    resolved = resolve_brain_for_operation(
+        explicit_root=args.project_root,
+        explicit_scope=explicit_scope,
+        explicit_mcp_name=args.mcp_name,
+        require_project=(force_scope == "project" and explicit_scope != "main"),
+        allow_main_fallback=allow_main,
+    )
+    if force_scope == "project" and resolved.brain_scope != "project" and explicit_scope != "main":
+        raise RuntimeError("No project Local AI Brain found. Re-run with --brain-scope main to target the main brain.")
+    optimize_args = []
+    if args.db:
+        optimize_args.extend(["--db", args.db])
+    else:
+        optimize_args.extend(["--db", str(resolved.db_path)])
+    if args.apply and not args.what_if:
+        optimize_args.append("--apply")
+    optimize_args.extend(["--lookup-event-retention-days", str(args.lookup_event_retention_days)])
+    optimize_args.extend(["--keep-lookup-events", str(args.keep_lookup_events)])
+    optimize_args.extend(["--source-file-retention-days", str(args.source_file_retention_days)])
+    optimize_args.extend(["--empty-record-retention-days", str(args.empty_record_retention_days)])
+    if args.drop_missing_artifacts:
+        optimize_args.append("--drop-missing-artifacts")
+    if args.no_vacuum:
+        optimize_args.append("--no-vacuum")
+    if args.no_backup:
+        optimize_args.append("--no-backup")
+    if args.json:
+        optimize_args.append("--json")
+    result = run_brain_command(resolved, ["optimize", *optimize_args], check=False)
+    touch_deploy_last_used(resolved.project_root, resolved.brain_scope, resolved.mcp_tool_prefix)
+    return result
+
+
+def run_index_scope(args: argparse.Namespace, force_scope: str) -> int:
+    explicit_scope = args.brain_scope or force_scope
+    resolved = resolve_brain_for_operation(
+        explicit_root=args.project_root,
+        explicit_scope=explicit_scope,
+        explicit_mcp_name=args.mcp_name,
+        require_project=False,
+        allow_main_fallback=True,
+    )
+    result = run_brain_command(resolved, ["rebuild-index"], check=False)
+    touch_deploy_last_used(resolved.project_root, resolved.brain_scope, resolved.mcp_tool_prefix)
+    return result
 
 
 def run_rollback_from_args(args: argparse.Namespace) -> int:
@@ -534,11 +675,13 @@ def run_rollback_from_args(args: argparse.Namespace) -> int:
             argparse.Namespace(
                 project_root=args.project_root,
                 source_dir=args.source_dir,
-                brain_scope="project",
+                brain_scope=args.brain_scope or "project",
+                mcp_name=args.mcp_name,
                 platform="",
                 what_if=False,
                 force=False,
                 doctor=False,
+                no_register_agents=False,
             )
         )
         return run_rollback(plan, what_if=args.what_if, yes=args.yes)
@@ -550,11 +693,7 @@ def run_rollback_from_args(args: argparse.Namespace) -> int:
 def run_rollback(plan: ProjectInstallPlan, what_if: bool, yes: bool) -> int:
     if not plan.project_root.exists():
         raise RuntimeError(f"project root does not exist: {plan.project_root}")
-    remove_target = [(plan.data_dir, "project brain"), (plan.mcp_dir, "MCP registration"), (plan.agents_file, "AGENTS block")]
-    if not same_path(plan.source_package_dir, plan.package_dir):
-        remove_target.append((plan.package_dir, "generated package"))
-    if plan.mcp_adapter_path.is_file():
-        remove_target.append((plan.mcp_adapter_path, "legacy MCP wrapper"))
+    remove_target = [(plan.mcp_registry_path, "MCP registration manifest"), (plan.mcp_adapter_path, "MCP adapter")]
     if not what_if and not confirm_rollback(plan, yes):
         print("Rollback cancelled.")
         return 1
@@ -575,6 +714,9 @@ def run_rollback(plan: ProjectInstallPlan, what_if: bool, yes: bool) -> int:
         else:
             print(f"Already absent: {target}")
     remove_agents_block(plan, what_if=what_if)
+    rollback_builtin_skills(plan, what_if=what_if)
+    rollback_agent_configs(plan, what_if=what_if)
+    remove_deploy_record(plan, what_if=what_if)
     return 0
 
 
@@ -622,11 +764,14 @@ def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
     project_root = Path(args.project_root).expanduser().resolve()
     source_root = Path(args.source_dir).expanduser().resolve() if args.source_dir else Path(__file__).resolve().parent
     brain_scope = resolve_brain_scope(getattr(args, "brain_scope", ""))
+    register_agents = not bool(getattr(args, "no_register_agents", False))
     source_package_dir = find_source_package(source_root)
     scripts_dir = (project_root / "scripts").resolve()
     package_dir = (scripts_dir / "local_ai_brain").resolve()
     data_dir = (project_root / "brain").resolve()
     mcp_dir = (project_root / "mcp").resolve()
+    explicit_mcp_name = str(getattr(args, "mcp_name", "") or "").strip()
+    mcp_name = explicit_mcp_name or default_mcp_name(project_root, brain_scope)
     return ProjectInstallPlan(
         platform_name=args.platform or detect_platform(),
         python_executable=Path(sys.executable).resolve(),
@@ -644,7 +789,8 @@ def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
         mcp_registry_path=mcp_dir / MCP_REGISTRY_NAME,
         mcp_adapter_path=scripts_dir / MCP_ADAPTER_NAME,
         brain_scope=brain_scope,
-        mcp_tool_prefix=mcp_tool_prefix(project_root, brain_scope),
+        mcp_tool_prefix=mcp_name,
+        register_agents=register_agents,
     )
 
 
@@ -689,6 +835,11 @@ def detect_platform() -> str:
 def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool) -> int:
     print_plan(plan, what_if=what_if, force=force, doctor=doctor)
     if what_if:
+        if plan.register_agents:
+            print("WOULD register MCP server for Codex, Copilot CLI, OpenCode, and Claude Code (best effort).")
+        else:
+            print("SKIP register MCP agent configs (--no-register-agents).")
+        print("WOULD deploy built-in SKILL.md files for Local AI Brain.")
         return 0
 
     plan.project_root.mkdir(parents=True, exist_ok=True)
@@ -700,6 +851,10 @@ def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool)
         run_brain_command(plan, ["doctor"])
     write_mcp_registration(plan)
     write_agents_file(plan)
+    deploy_builtin_skills(plan)
+    if plan.register_agents:
+        register_agent_configs(plan)
+    record_deploy(plan)
     print_next_steps(plan)
     return 0
 
@@ -722,6 +877,7 @@ def print_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: boo
     print(f"mcp_registry: {plan.mcp_registry_path}")
     print(f"mcp_adapter: {plan.mcp_adapter_path}")
     print(f"mcp_name: {plan.mcp_tool_prefix}")
+    print(f"register_agents: {plan.register_agents}")
     print(f"force: {force}")
     print(f"doctor: {doctor}")
     operations = [
@@ -746,12 +902,19 @@ def install_package(plan: ProjectInstallPlan, force: bool) -> None:
     if same_path(plan.source_package_dir, plan.package_dir):
         return
     if plan.package_dir.exists():
-        if not force:
-            raise RuntimeError(f"package already exists; re-run with --force to update: {plan.package_dir}")
         assert_safe_package_destination(plan)
-        shutil.rmtree(plan.package_dir)
-    plan.package_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(plan.source_package_dir, plan.package_dir, ignore=copy_ignore)
+        if force:
+            if plan.package_dir.is_dir():
+                shutil.rmtree(plan.package_dir)
+            else:
+                plan.package_dir.unlink()
+        elif not plan.package_dir.is_dir():
+            raise RuntimeError(f"package destination is not a directory; re-run with --force to replace: {plan.package_dir}")
+        else:
+            copy_package_tree(plan.source_package_dir, plan.package_dir)
+    if not plan.package_dir.exists():
+        plan.package_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(plan.source_package_dir, plan.package_dir, ignore=copy_ignore)
     installer_destination = plan.project_root / CANONICAL_INSTALLER_NAME
     if plan.source_installer.is_file() and not same_path(plan.source_installer, installer_destination):
         shutil.copy2(plan.source_installer, installer_destination)
@@ -760,6 +923,20 @@ def install_package(plan: ProjectInstallPlan, force: bool) -> None:
 def validate_source_package(source_package_dir: Path) -> None:
     if not (source_package_dir / "__main__.py").is_file():
         raise RuntimeError(f"source package is missing __main__.py: {source_package_dir}")
+
+
+def copy_package_tree(source: Path, destination: Path) -> None:
+    for current_dir, dirnames, filenames in os.walk(source):
+        current = Path(current_dir)
+        ignored = copy_ignore(str(current), [*dirnames, *filenames])
+        dirnames[:] = [name for name in dirnames if name not in ignored]
+        relative = current.relative_to(source)
+        target_dir = destination / relative
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for filename in filenames:
+            if filename in ignored:
+                continue
+            shutil.copy2(current / filename, target_dir / filename)
 
 
 def same_path(left: Path, right: Path) -> bool:
@@ -851,9 +1028,27 @@ def mcp_tool_name(plan: ProjectInstallPlan, action: str) -> str:
 
 
 def mcp_tool_prefix(project_root: Path, brain_scope: str) -> str:
+    return default_mcp_name(project_root, brain_scope)
+
+
+def default_mcp_name(project_root: Path, brain_scope: str) -> str:
     if brain_scope == "main":
         return "localaibrain"
-    return f"{project_tool_prefix(project_root)}.localaibrain"
+    parent = project_tool_prefix(project_root.parent)
+    child = project_tool_prefix(project_root)
+    base = f"{parent}.localaibrain"
+    deploys = load_deploy_registry().get("deploys", [])
+    for entry in deploys:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("scope", "")) != "project":
+            continue
+        if str(entry.get("mcp_name", "")) != base:
+            continue
+        entry_root = str(entry.get("root", ""))
+        if entry_root and Path(entry_root).expanduser().resolve() != project_root.resolve():
+            return f"{parent}-{child}.localaibrain"
+    return base
 
 
 def project_tool_prefix(project_root: Path) -> str:
@@ -916,6 +1111,30 @@ Use it before non-trivial repo, debugging, UI, deployment, planning, or multi-ag
 - Local MCP stdio adapter: `{adapter}`
 
 Use Python only. Do not write SQLite directly.
+
+Agent software and model allocation:
+
+- Keep a clear divide between model roles. Operator and Engineer lanes are lightweight coding agents for repo reads, local edits, tests, terminal work, MCP calls, and linear implementation. Larger architecture models such as GPT-5.5 are for innovation, system design, product architecture, strategy, and reviewing the shape of major decisions.
+- Do not spend large architecture models on routine coding work when Copilot CLI, OpenCode, Codex coding lanes, or Claude Code can execute the task through their tools.
+- When orchestrating multiple agents, assign linear implementation tickets to Operator/Engineer agents first, then escalate only the design question, architecture tradeoff, or unresolved blocker to a larger architecture model.
+- Agents should call Local AI Brain through the registered MCP tools first. Use the commander CLI below as the fallback when the host agent cannot reach MCP.
+
+Full access command labels for agent software:
+
+```yaml
+full_access_commands:
+  copilot: "copilot --allow-all"
+  copilot_tools_only: "copilot --allow-all-tools"
+  opencode: "opencode --dangerously-skip-permissions"
+  codex: "codex --dangerously-bypass-approvals-and-sandbox"
+  claude: "claude --permission-mode bypassPermissions"
+  claude_alt: "claude --dangerously-skip-permissions"
+one_shot_commands:
+  copilot: "copilot -p \"<task>\" --allow-all"
+  opencode: "opencode run --dir \"{project}\" --dangerously-skip-permissions \"<task>\""
+  codex: "codex exec --cd \"{project}\" --dangerously-bypass-approvals-and-sandbox \"<task>\""
+  claude: "cd \"{project}\"; claude -p \"<task>\" --permission-mode bypassPermissions"
+```
 
 Project commander:
 
@@ -1025,6 +1244,593 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
     return template.replace("__TOOL_PREFIX__", tool_prefix).replace("__SCOPE_DESCRIPTION__", scope_description_literal)
+
+
+@dataclass(frozen=True)
+class ResolvedBrain:
+    project_root: Path
+    brain_scope: str
+    mcp_tool_prefix: str
+    scripts_dir: Path
+    data_dir: Path
+    db_path: Path
+    python_executable: Path
+
+
+def now_iso_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def deploy_registry_path() -> Path:
+    return DEPLOY_REGISTRY_PATH.expanduser().resolve()
+
+
+def load_deploy_registry() -> dict[str, Any]:
+    path = deploy_registry_path()
+    if not path.is_file():
+        return {"deploys": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"deploys": []}
+    deploys = data.get("deploys", [])
+    if not isinstance(deploys, list):
+        deploys = []
+    return {"deploys": deploys}
+
+
+def save_deploy_registry(registry: dict[str, Any]) -> None:
+    path = deploy_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"deploys": registry.get("deploys", [])}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def record_deploy(plan: ProjectInstallPlan) -> None:
+    registry = load_deploy_registry()
+    deploys = [entry for entry in registry.get("deploys", []) if isinstance(entry, dict)]
+    now = now_iso_utc()
+    deployed_skills = [str(path) for path in builtin_skill_targets(plan)]
+    entry = {
+        "scope": plan.brain_scope,
+        "root": str(plan.project_root),
+        "mcp_name": plan.mcp_tool_prefix,
+        "adapter": str(plan.mcp_adapter_path),
+        "registry": str(plan.mcp_registry_path),
+        "deployed_skills": deployed_skills,
+        "last_deployed": now,
+        "last_used": now,
+    }
+    updated = False
+    for index, current in enumerate(deploys):
+        if (
+            str(current.get("scope", "")) == plan.brain_scope
+            and str(current.get("root", "")) == str(plan.project_root)
+            and str(current.get("mcp_name", "")) == plan.mcp_tool_prefix
+        ):
+            deploys[index] = entry
+            updated = True
+            break
+    if not updated:
+        deploys.append(entry)
+    registry["deploys"] = deploys
+    save_deploy_registry(registry)
+
+
+def touch_deploy_last_used(project_root: Path, brain_scope: str, mcp_name: str) -> None:
+    registry = load_deploy_registry()
+    changed = False
+    for entry in registry.get("deploys", []):
+        if not isinstance(entry, dict):
+            continue
+        if (
+            str(entry.get("root", "")) == str(project_root)
+            and str(entry.get("scope", "")) == brain_scope
+            and str(entry.get("mcp_name", "")) == mcp_name
+        ):
+            entry["last_used"] = now_iso_utc()
+            changed = True
+            break
+    if changed:
+        save_deploy_registry(registry)
+
+
+def remove_deploy_record(plan: ProjectInstallPlan, what_if: bool) -> None:
+    registry = load_deploy_registry()
+    deploys = [entry for entry in registry.get("deploys", []) if isinstance(entry, dict)]
+    kept = []
+    removed = 0
+    for entry in deploys:
+        if (
+            str(entry.get("root", "")) == str(plan.project_root)
+            and str(entry.get("scope", "")) == plan.brain_scope
+            and (not getattr(plan, "mcp_tool_prefix", "") or str(entry.get("mcp_name", "")) == plan.mcp_tool_prefix)
+        ):
+            removed += 1
+            continue
+        kept.append(entry)
+    if what_if:
+        print(f"Would remove deploy registry entries: {removed}")
+        return
+    registry["deploys"] = kept
+    save_deploy_registry(registry)
+
+
+def resolve_brain_for_operation(
+    explicit_root: str,
+    explicit_scope: str,
+    explicit_mcp_name: str,
+    require_project: bool,
+    allow_main_fallback: bool,
+) -> ResolvedBrain:
+    registry = load_deploy_registry()
+    deploys = [entry for entry in registry.get("deploys", []) if isinstance(entry, dict)]
+    candidate = resolve_explicit_candidate(deploys, explicit_root, explicit_scope, explicit_mcp_name)
+    if candidate is None:
+        candidate = resolve_nearest_project_candidate(deploys, Path.cwd().resolve())
+    if candidate is None:
+        candidate = resolve_recent_project_candidate(deploys)
+    if candidate is None and allow_main_fallback:
+        candidate = resolve_recent_main_candidate(deploys)
+    if candidate is None:
+        if require_project:
+            raise RuntimeError("No project Local AI Brain deployment is available.")
+        raise RuntimeError("No Local AI Brain deployment is available. Run deploy first.")
+    if require_project and candidate.brain_scope != "project":
+        raise RuntimeError("No project Local AI Brain deployment is available.")
+    return candidate
+
+
+def resolve_explicit_candidate(
+    deploys: list[dict[str, Any]],
+    explicit_root: str,
+    explicit_scope: str,
+    explicit_mcp_name: str,
+) -> ResolvedBrain | None:
+    root = explicit_root.strip()
+    scope = explicit_scope.strip()
+    mcp_name = explicit_mcp_name.strip()
+    if not (root or scope or mcp_name):
+        return None
+    root_path = Path(root).expanduser().resolve() if root else None
+    for entry in deploys:
+        entry_root = Path(str(entry.get("root", "."))).expanduser().resolve()
+        entry_scope = str(entry.get("scope", ""))
+        entry_name = str(entry.get("mcp_name", ""))
+        if root_path is not None and entry_root != root_path:
+            continue
+        if scope and entry_scope != scope:
+            continue
+        if mcp_name and entry_name != mcp_name:
+            continue
+        return candidate_from_registry(entry)
+    if root_path is not None:
+        guessed_scope = scope or "project"
+        return guessed_candidate(root_path, guessed_scope, mcp_name or default_mcp_name(root_path, guessed_scope))
+    if scope == "main":
+        fallback_root = Path.cwd().resolve()
+        return guessed_candidate(fallback_root, "main", mcp_name or "localaibrain")
+    return None
+
+
+def resolve_nearest_project_candidate(deploys: list[dict[str, Any]], cwd: Path) -> ResolvedBrain | None:
+    candidates: list[tuple[int, ResolvedBrain]] = []
+    for entry in deploys:
+        if str(entry.get("scope", "")) != "project":
+            continue
+        root = Path(str(entry.get("root", "."))).expanduser().resolve()
+        if cwd == root or root in cwd.parents:
+            candidates.append((len(str(root)), candidate_from_registry(entry)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return candidates[0][1]
+
+
+def resolve_recent_project_candidate(deploys: list[dict[str, Any]]) -> ResolvedBrain | None:
+    projects = [entry for entry in deploys if str(entry.get("scope", "")) == "project"]
+    if not projects:
+        return None
+    projects.sort(key=lambda entry: str(entry.get("last_used", "")) or str(entry.get("last_deployed", "")), reverse=True)
+    return candidate_from_registry(projects[0])
+
+
+def resolve_recent_main_candidate(deploys: list[dict[str, Any]]) -> ResolvedBrain | None:
+    mains = [entry for entry in deploys if str(entry.get("scope", "")) == "main"]
+    if not mains:
+        return None
+    mains.sort(key=lambda entry: str(entry.get("last_used", "")) or str(entry.get("last_deployed", "")), reverse=True)
+    return candidate_from_registry(mains[0])
+
+
+def candidate_from_registry(entry: dict[str, Any]) -> ResolvedBrain:
+    root = Path(str(entry.get("root", "."))).expanduser().resolve()
+    scope = str(entry.get("scope", "project"))
+    name = str(entry.get("mcp_name", default_mcp_name(root, scope)))
+    scripts_dir = root / "scripts"
+    data_dir = root / "brain"
+    return ResolvedBrain(
+        project_root=root,
+        brain_scope=scope,
+        mcp_tool_prefix=name,
+        scripts_dir=scripts_dir,
+        data_dir=data_dir,
+        db_path=data_dir / "brain.db",
+        python_executable=Path(sys.executable).resolve(),
+    )
+
+
+def guessed_candidate(root: Path, scope: str, mcp_name: str) -> ResolvedBrain:
+    scripts_dir = root / "scripts"
+    data_dir = root / "brain"
+    return ResolvedBrain(
+        project_root=root,
+        brain_scope=scope,
+        mcp_tool_prefix=mcp_name,
+        scripts_dir=scripts_dir,
+        data_dir=data_dir,
+        db_path=data_dir / "brain.db",
+        python_executable=Path(sys.executable).resolve(),
+    )
+
+
+def skill_template_source(skill_name: str, plan: ProjectInstallPlan) -> str:
+    if skill_name == "Ourstuff LAIB Optimize Main":
+        action = "optimize-main"
+        description = "Optimize the main Local AI Brain through MCP first, with commander CLI fallback."
+    elif skill_name == "Ourstuff LAIB Optimize Project":
+        action = "optimize-project"
+        description = "Optimize the nearest or most relevant project Local AI Brain through MCP first, with commander CLI fallback."
+    else:
+        action = "index"
+        description = "Rebuild the nearest Local AI Brain index through MCP first, with commander CLI fallback."
+    return (
+        "---\n"
+        f"name: {skill_name}\n"
+        f"description: {description}\n"
+        "managed_by: local-ai-brain-managed\n"
+        "schema: v1\n"
+        "---\n\n"
+        f"Use `python \"{plan.project_root / CANONICAL_INSTALLER_NAME}\" {action}` for this Local AI Brain deployment.\n"
+    )
+
+
+def skill_scope_roots(plan: ProjectInstallPlan) -> list[Path]:
+    if plan.brain_scope == "main":
+        return [Path.home()]
+    return [plan.project_root]
+
+
+def builtin_skill_targets(plan: ProjectInstallPlan) -> list[Path]:
+    targets: list[Path] = []
+    for root in skill_scope_roots(plan):
+        for base in (root / ".agents" / "skills", root / ".claude" / "skills"):
+            for skill in BUILTIN_SKILL_NAMES:
+                targets.append(base / BUILTIN_SKILL_SLUGS[skill] / "SKILL.md")
+    return targets
+
+
+def deploy_builtin_skills(plan: ProjectInstallPlan) -> None:
+    templates_root = Path(__file__).resolve().parent / "templates" / "skills"
+    for skill_name in BUILTIN_SKILL_NAMES:
+        slug = BUILTIN_SKILL_SLUGS[skill_name]
+        template_path = templates_root / slug / "SKILL.md"
+        if template_path.is_file():
+            body = template_path.read_text(encoding="utf-8")
+        else:
+            body = skill_template_source(skill_name, plan)
+        for root in skill_scope_roots(plan):
+            for base in (root / ".agents" / "skills", root / ".claude" / "skills"):
+                target = base / slug / "SKILL.md"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+                openai_yaml = target.parent / "agents" / "openai.yaml"
+                openai_yaml.parent.mkdir(parents=True, exist_ok=True)
+                openai_yaml.write_text(skill_openai_yaml(skill_name, plan), encoding="utf-8")
+
+
+def rollback_builtin_skills(plan: ProjectInstallPlan, what_if: bool) -> None:
+    for target in builtin_skill_targets(plan):
+        if not target.is_file():
+            continue
+        content = target.read_text(encoding="utf-8")
+        if LAIB_MANAGED_MARKER not in content:
+            continue
+        skill_dir = target.parent
+        if what_if:
+            print(f"Would remove managed skill: {skill_dir}")
+            continue
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        print(f"Removed managed skill: {skill_dir}")
+
+
+def skill_openai_yaml(skill_name: str, plan: ProjectInstallPlan) -> str:
+    display_name = skill_name
+    short_description = {
+        "Ourstuff LAIB Optimize Main": "Optimize the main Local AI Brain.",
+        "Ourstuff LAIB Optimize Project": "Optimize the nearest project Local AI Brain.",
+        "Ourstuff LAIB Index": "Rebuild the nearest Local AI Brain index.",
+    }.get(skill_name, "Use Local AI Brain maintenance tools.")
+    return f"""interface:
+  display_name: "{display_name}"
+  short_description: "{short_description}"
+  default_prompt: "Use {skill_name}."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "{plan.mcp_tool_prefix}"
+      description: "Local AI Brain MCP server"
+      transport: "stdio"
+metadata:
+  managed_by: "{LAIB_MANAGED_MARKER}"
+"""
+
+
+def register_agent_configs(plan: ProjectInstallPlan) -> None:
+    for name, func in (
+        ("Codex", register_codex_config),
+        ("Copilot CLI", register_copilot_config),
+        ("OpenCode", register_opencode_config),
+        ("Claude Code", register_claude_config),
+    ):
+        try:
+            func(plan)
+        except Exception as exc:
+            print(f"WARN: unable to register {name} MCP config: {exc}")
+
+
+def rollback_agent_configs(plan: ProjectInstallPlan, what_if: bool) -> None:
+    for func in (
+        lambda: rollback_codex_config(plan, what_if),
+        lambda: rollback_json_config(Path.home() / ".copilot" / "mcp-config.json", plan, what_if, server_key="mcpServers"),
+        lambda: rollback_json_config(Path.home() / ".config" / "opencode" / "opencode.jsonc", plan, what_if, server_key="mcp"),
+        lambda: rollback_json_config(claude_fallback_config_path(plan), plan, what_if, server_key="mcpServers"),
+    ):
+        try:
+            func()
+        except Exception as exc:
+            print(f"WARN: unable to rollback managed MCP config entry: {exc}")
+
+
+def server_spec(plan: ProjectInstallPlan) -> dict[str, Any]:
+    return {
+        "command": str(plan.python_executable),
+        "args": [str(plan.mcp_adapter_path)],
+        "cwd": str(plan.project_root),
+        "env": {
+            "PYTHONPATH": str(plan.scripts_dir),
+            "LOCAL_AI_BRAIN_HOME": str(plan.data_dir),
+        },
+        "managedBy": LAIB_MANAGED_MARKER,
+        "scope": plan.brain_scope,
+        "root": str(plan.project_root),
+    }
+
+
+def opencode_server_spec(plan: ProjectInstallPlan) -> dict[str, Any]:
+    return {
+        "type": "local",
+        "command": [str(plan.python_executable), str(plan.mcp_adapter_path)],
+        "enabled": True,
+        "environment": {
+            "PYTHONPATH": str(plan.scripts_dir),
+            "LOCAL_AI_BRAIN_HOME": str(plan.data_dir),
+        },
+        "managedBy": LAIB_MANAGED_MARKER,
+        "scope": plan.brain_scope,
+        "root": str(plan.project_root),
+    }
+
+
+def register_codex_config(plan: ProjectInstallPlan) -> None:
+    path = Path.home() / ".codex" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    marker_start = f"# LOCAL_AI_BRAIN_MANAGED_START {plan.mcp_tool_prefix}"
+    marker_end = f"# LOCAL_AI_BRAIN_MANAGED_END {plan.mcp_tool_prefix}"
+    quoted_name = plan.mcp_tool_prefix.replace('"', '\\"')
+    block = (
+        f"{marker_start}\n"
+        f'[mcp_servers."{quoted_name}"]\n'
+        f"command = {toml_string(str(plan.python_executable))}\n"
+        f"args = [{toml_string(str(plan.mcp_adapter_path))}]\n"
+        f"cwd = {toml_string(str(plan.project_root))}\n"
+        f'[mcp_servers."{quoted_name}".env]\n'
+        f"PYTHONPATH = {toml_string(str(plan.scripts_dir))}\n"
+        f"LOCAL_AI_BRAIN_HOME = {toml_string(str(plan.data_dir))}\n"
+        f"managed_by = {toml_string(LAIB_MANAGED_MARKER)}\n"
+        f"{marker_end}\n"
+    )
+    updated = strip_codex_managed_block(existing, plan.mcp_tool_prefix).rstrip()
+    if updated:
+        updated += "\n\n"
+    updated += block
+    backup_file(path)
+    path.write_text(updated + ("\n" if not updated.endswith("\n") else ""), encoding="utf-8")
+
+
+def rollback_codex_config(plan: ProjectInstallPlan, what_if: bool) -> None:
+    path = Path.home() / ".codex" / "config.toml"
+    if not path.is_file():
+        return
+    existing = path.read_text(encoding="utf-8")
+    updated = strip_codex_managed_block(existing, plan.mcp_tool_prefix)
+    if updated == existing:
+        return
+    if what_if:
+        print(f"Would remove managed Codex MCP block: {path}")
+        return
+    backup_file(path)
+    path.write_text(updated, encoding="utf-8")
+    print(f"Removed managed Codex MCP block: {path}")
+
+
+def strip_codex_managed_block(content: str, mcp_name: str) -> str:
+    pattern = re.compile(
+        re.escape(f"# LOCAL_AI_BRAIN_MANAGED_START {mcp_name}")
+        + r".*?"
+        + re.escape(f"# LOCAL_AI_BRAIN_MANAGED_END {mcp_name}")
+        + r"\n?",
+        re.DOTALL,
+    )
+    return pattern.sub("", content)
+
+
+def register_copilot_config(plan: ProjectInstallPlan) -> None:
+    write_json_config(Path.home() / ".copilot" / "mcp-config.json", plan, allow_jsonc=False, server_key="mcpServers", spec=server_spec(plan))
+
+
+def register_opencode_config(plan: ProjectInstallPlan) -> None:
+    write_json_config(Path.home() / ".config" / "opencode" / "opencode.jsonc", plan, allow_jsonc=True, server_key="mcp", spec=opencode_server_spec(plan))
+
+
+def register_claude_config(plan: ProjectInstallPlan) -> None:
+    claude_cli = shutil.which("claude")
+    if claude_cli:
+        try:
+            result = subprocess.run(
+                [
+                    claude_cli,
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user" if plan.brain_scope == "main" else "project",
+                    plan.mcp_tool_prefix,
+                    "--",
+                    str(plan.python_executable),
+                    str(plan.mcp_adapter_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=str(plan.project_root),
+            )
+            if result.returncode == 0:
+                return
+            print(f"WARN: Claude CLI MCP registration failed: {result.stderr.strip() or result.stdout.strip()}")
+        except Exception:
+            print("WARN: Claude CLI MCP registration failed; writing .mcp.json fallback.")
+    write_json_config(claude_fallback_config_path(plan), plan, allow_jsonc=False, server_key="mcpServers", spec=server_spec(plan))
+
+
+def claude_fallback_config_path(plan: ProjectInstallPlan) -> Path:
+    if plan.brain_scope == "project":
+        return plan.project_root / ".mcp.json"
+    return Path.home() / ".mcp.json"
+
+
+def parse_jsonc(text: str) -> dict[str, Any]:
+    cleaned = strip_jsonc_comments(text)
+    cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+    stripped = cleaned.strip()
+    if not stripped:
+        return {}
+    parsed = json.loads(stripped)
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def strip_jsonc_comments(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escape = False
+    while index < len(text):
+        char = text[index]
+        nxt = text[index + 1] if index + 1 < len(text) else ""
+        if in_string:
+            output.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if char == "/" and nxt == "/":
+            index += 2
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and nxt == "*":
+            index += 2
+            while index + 1 < len(text) and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def write_json_config(path: Path, plan: ProjectInstallPlan, allow_jsonc: bool, server_key: str, spec: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        raw = path.read_text(encoding="utf-8")
+        try:
+            data = parse_jsonc(raw) if allow_jsonc else json.loads(raw)
+        except Exception:
+            print(f"WARN: could not parse existing config, skipping update: {path}")
+            return
+        if not isinstance(data, dict):
+            print(f"WARN: unexpected config shape, skipping update: {path}")
+            return
+    else:
+        data = {}
+    servers = data.get(server_key)
+    if not isinstance(servers, dict):
+        servers = {}
+    servers[plan.mcp_tool_prefix] = spec
+    data[server_key] = servers
+    backup_file(path)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def rollback_json_config(path: Path, plan: ProjectInstallPlan, what_if: bool, server_key: str) -> None:
+    if not path.is_file():
+        return
+    raw = path.read_text(encoding="utf-8")
+    try:
+        data = parse_jsonc(raw)
+    except Exception:
+        return
+    changed = False
+    servers = data.get(server_key)
+    if isinstance(servers, dict):
+        current = servers.get(plan.mcp_tool_prefix)
+        if isinstance(current, dict) and str(current.get("managedBy", "")) == LAIB_MANAGED_MARKER:
+            del servers[plan.mcp_tool_prefix]
+            changed = True
+    if not changed:
+        return
+    if what_if:
+        print(f"Would remove managed MCP entry: {path}")
+        return
+    backup_file(path)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(f"Removed managed MCP entry: {path}")
+
+
+def backup_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = path.with_name(f"{path.name}.bak-{stamp}")
+    shutil.copy2(path, backup_path)
 
 
 if __name__ == "__main__":

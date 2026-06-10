@@ -41,6 +41,13 @@ ACTION_TO_BASE = {
     "rebuild_index": "rebuild_index",
     "codex-title-distill": "codex_title_distill",
     "codex_title_distill": "codex_title_distill",
+    "resolve-brain": "resolve_brain",
+    "resolve_brain": "resolve_brain",
+    "optimize-main": "optimize_main",
+    "optimize_main": "optimize_main",
+    "optimize-project": "optimize_project",
+    "optimize_project": "optimize_project",
+    "index": "index",
 }
 BASE_TO_ACTION = {
     "doctor": "doctor",
@@ -54,6 +61,10 @@ BASE_TO_ACTION = {
     "proof_report": "proof-report",
     "rebuild_index": "rebuild-index",
     "codex_title_distill": "codex-title-distill",
+    "resolve_brain": "resolve-brain",
+    "optimize_main": "optimize-main",
+    "optimize_project": "optimize-project",
+    "index": "index",
 }
 
 
@@ -129,6 +140,8 @@ def call_project_tool(params: Any) -> dict[str, Any]:
         payload = args.get("payload")
         if isinstance(payload, dict):
             payload.setdefault("repo_path", str(PROJECT_ROOT))
+    if base_name in {"resolve_brain", "optimize_project", "index"} and "projectRoot" not in args:
+        args["projectRoot"] = str(PROJECT_ROOT)
     return base_mcp.call_tool({"name": base_name, "arguments": args})
 
 

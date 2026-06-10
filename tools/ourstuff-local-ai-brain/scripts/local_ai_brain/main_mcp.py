@@ -34,7 +34,7 @@ class McpServer:
                     {
                         "protocolVersion": PROTOCOL_VERSION,
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "local-ai-brain", "version": SERVER_VERSION},
+                        "serverInfo": {"name": "localaibrain", "version": SERVER_VERSION},
                     },
                 )
             if method == "notifications/initialized":
@@ -151,6 +151,46 @@ def tools_list() -> list[dict[str, Any]]:
                     "apply": {"type": "boolean"},
                     "yes": {"type": "boolean"},
                 },
+                "additionalProperties": False,
+            },
+            "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        },
+        {
+            "name": "resolve_brain",
+            "title": "Resolve Local AI Brain target",
+            "description": "Resolve explicit/nearest/recent brain target.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"projectRoot": text_arg, "brainScope": text_arg, "mcpName": text_arg, "json": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
+            "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        },
+        {
+            "name": "optimize_main",
+            "title": "Optimize main Local AI Brain",
+            "description": "Run optimize-main for the main brain target.",
+            "inputSchema": {"type": "object", "properties": {"apply": {"type": "boolean"}}, "additionalProperties": False},
+            "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        },
+        {
+            "name": "optimize_project",
+            "title": "Optimize project Local AI Brain",
+            "description": "Run optimize-project for nearest/recent project target.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"apply": {"type": "boolean"}, "brainScope": text_arg, "projectRoot": text_arg},
+                "additionalProperties": False,
+            },
+            "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+        },
+        {
+            "name": "index",
+            "title": "Rebuild Local AI Brain index",
+            "description": "Run index command for resolved brain target.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"brainScope": text_arg, "projectRoot": text_arg},
                 "additionalProperties": False,
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
@@ -282,6 +322,38 @@ def call_tool(params: Any) -> dict[str, Any]:
         if args.get("yes"):
             command.append("--yes")
         return text_content(run_cli(command))
+    if name == "resolve_brain":
+        command = ["resolve-brain"]
+        if args.get("projectRoot"):
+            command.extend(["--project-root", str(args["projectRoot"])])
+        if args.get("brainScope"):
+            command.extend(["--brain-scope", str(args["brainScope"])])
+        if args.get("mcpName"):
+            command.extend(["--mcp-name", str(args["mcpName"])])
+        if bool(args.get("json", True)):
+            command.append("--json")
+        return text_content(run_commander(command))
+    if name == "optimize_main":
+        command = ["optimize-main", "--brain-scope", "main"]
+        if args.get("apply"):
+            command.append("--apply")
+        return text_content(run_commander(command))
+    if name == "optimize_project":
+        command = ["optimize-project"]
+        if args.get("apply"):
+            command.append("--apply")
+        if args.get("brainScope"):
+            command.extend(["--brain-scope", str(args["brainScope"])])
+        if args.get("projectRoot"):
+            command.extend(["--project-root", str(args["projectRoot"])])
+        return text_content(run_commander(command))
+    if name == "index":
+        command = ["index"]
+        if args.get("brainScope"):
+            command.extend(["--brain-scope", str(args["brainScope"])])
+        if args.get("projectRoot"):
+            command.extend(["--project-root", str(args["projectRoot"])])
+        return text_content(run_commander(command))
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -310,6 +382,26 @@ def run_cli(args: list[str]) -> str:
         [sys.executable, "-m", "local_ai_brain", *args],
         cwd=package_root,
         env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    output = completed.stdout.strip()
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or output or f"exit {completed.returncode}"
+        raise RuntimeError(detail)
+    return output
+
+
+def run_commander(args: list[str]) -> str:
+    package_root = Path(__file__).resolve().parents[1]
+    candidates = [package_root.parent / "localaibrain.py", Path.cwd() / "localaibrain.py"]
+    script = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if script is None:
+        raise RuntimeError("localaibrain.py not found for MCP command execution")
+    completed = subprocess.run(
+        [sys.executable, str(script), *args],
+        cwd=str(script.parent),
         text=True,
         capture_output=True,
         timeout=120,
