@@ -91,11 +91,16 @@ For these dashboard repos, push first, then pull live by starting the matching s
 
 | Local repo | GitPublish site |
 | --- | --- |
-| `D:\GIT\automation.is.gradientfg.com` | `automation.is` |
-| `D:\GIT\it.is.gradientfg.com` | `it.is` |
-| `D:\GIT\is.gradientfg.com` | `is` |
+| `D:\GIT\automation.is.gradientfg.com` | `automation.is.gradientfg.com` |
+| `D:\GIT\ga.is.gradientfg.com` | `ga.is.gradientfg.com` |
+| `D:\GIT\gi.is.gradientfg.com` | `gi.is.gradientfg.com` |
+| `D:\GIT\it.is.gradientfg.com` | `it.is.gradientfg.com` |
+| `D:\GIT\launch.is.gradientfg.com` | `launch.is.gradientfg.com` |
+| `D:\GIT\mcp.is.gradientfg.com` | `mcp.is.gradientfg.com` |
+| `D:\GIT\meraki.is.gradientfg.com` | `meraki.is.gradientfg.com` |
+| `D:\GIT\ria.is.gradientfg.com` | `ria.is.gradientfg.com` |
 | `D:\GIT\ASPX_CODING` | no SRV01-16 static pull; API/source repo only |
-| any repo matching `D:\GIT\<site>.gradientfg.com` | `<site>` when a `\GFG\GitPublish\Publish-<site>` task exists |
+| any repo matching `D:\GIT\<fqdn>` | `<fqdn>` when a `\GFG\GitPublish\Publish-<fqdn>` task exists |
 
 Run the pull through the scheduled task:
 
@@ -103,7 +108,7 @@ Run the pull through the scheduled task:
 Invoke-Command -ComputerName SRV01-16 -ScriptBlock {
   param($Site)
   Start-ScheduledTask -TaskPath '\GFG\GitPublish\' -TaskName "Publish-$Site"
-} -ArgumentList '<site>'
+} -ArgumentList '<fqdn>'
 ```
 
 Then verify the GitPublish log:
@@ -112,7 +117,7 @@ Then verify the GitPublish log:
 Invoke-Command -ComputerName SRV01-16 -ScriptBlock {
   param($Site)
   Get-Content "C:\GitPublish\logs\$Site.log" -Tail 80
-} -ArgumentList '<site>'
+} -ArgumentList '<fqdn>'
 ```
 
 Treat `ABORT: untracked files present` as a blocked release. Do not clean or reset live web manually unless explicitly asked.
