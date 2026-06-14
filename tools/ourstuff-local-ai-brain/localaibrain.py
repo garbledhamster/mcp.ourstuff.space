@@ -93,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"deploy", "setup", "install"}:
         args = parser.parse_args(effective_argv[1:])
         return run_from_args(args)
+    if command in {"install-skills", "skills"}:
+        args = build_install_skills_parser().parse_args(effective_argv[1:])
+        return run_install_skills_from_args(args)
     if command in {"run", "cmd", "brain"}:
         return run_local_brain_from_args(effective_argv[1:])
     if command in {"terminal", "shell"}:
@@ -123,8 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=CANONICAL_INSTALLER_NAME,
         description=(
             "Commander for a project-local Local AI Brain. "
-            "Use deploy/setup to seed the current folder, run to execute brain commands, "
-            "or terminal/shell to open a configured command window."
+            "Use deploy/setup to seed the current folder, install-skills to install the optional skills, "
+            "run to execute brain commands, or terminal/shell to open a configured command window."
         ),
     )
     parser.add_argument("--menu", action="store_true", help="Open the interactive terminal menu.")
@@ -153,11 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Override platform detection for dry-run/testing.",
     )
-    parser.add_argument("--mcp-name", default="", help="Override MCP server name.")
+    parser.add_argument("--mcp-name", default="", help="Deprecated compatibility option; MCP startup registration is disabled.")
     parser.add_argument(
         "--no-register-agents",
         action="store_true",
-        help="Skip MCP agent config registration for Codex/Copilot/OpenCode/Claude.",
+        help="Deprecated compatibility flag. MCP agent config registration is always skipped.",
     )
     return parser
 
@@ -177,10 +180,11 @@ def interactive_cli(parser: argparse.ArgumentParser) -> int:
         "5": ("Run a Local AI Brain command", "run"),
         "6": ("Open configured terminal", ("terminal", [])),
         "7": ("Open Local AI Brain UI", ("ui", [])),
-        "8": ("Rollback project-local files", ("rollback", [])),
-        "9": ("Custom deploy builder", ("deploy", None)),
-        "10": ("Show command help", "help"),
-        "11": ("Quit", "quit"),
+        "8": ("Install/update Local AI Brain skills", ("install-skills", [])),
+        "9": ("Rollback project-local files", ("rollback", [])),
+        "10": ("Custom deploy builder", ("deploy", None)),
+        "11": ("Show command help", "help"),
+        "12": ("Quit", "quit"),
     }
     while True:
         for key, (label, _argv) in choices.items():
@@ -196,7 +200,7 @@ def interactive_cli(parser: argparse.ArgumentParser) -> int:
             print_commander_help(parser)
             print("")
             continue
-        if choice in {"q", "quit", "11"}:
+        if choice in {"q", "quit", "12"}:
             return 0
         if choice not in choices:
             print("Unknown choice.")
@@ -224,6 +228,10 @@ def interactive_cli(parser: argparse.ArgumentParser) -> int:
             continue
         if mode == "ui":
             open_ui_from_args(argv)
+            print("")
+            continue
+        if mode == "install-skills":
+            run_install_skills_from_args(build_install_skills_parser().parse_args(argv))
             print("")
             continue
         if mode == "run":
@@ -410,7 +418,7 @@ def run_local_brain_from_args(argv: list[str]) -> int:
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
-                no_register_agents=False,
+                no_register_agents=True,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -435,7 +443,7 @@ def open_terminal_from_args(argv: list[str]) -> int:
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
-                no_register_agents=False,
+                no_register_agents=True,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -460,7 +468,7 @@ def open_ui_from_args(argv: list[str]) -> int:
                 what_if=False,
                 force=args.force_setup,
                 doctor=False,
-                no_register_agents=False,
+                no_register_agents=True,
             )
         )
         prepare_or_require_project_plan(plan, args.no_setup, force=args.force_setup, doctor=False)
@@ -495,9 +503,8 @@ def ensure_project_ready(plan: ProjectInstallPlan, force: bool, doctor: bool) ->
     migrate_old_scattered_install(plan)
     package_missing = not (plan.package_dir / "__main__.py").is_file()
     db_missing = not plan.db_path.is_file()
-    mcp_missing = not plan.mcp_registry_path.is_file() or not plan.mcp_adapter_path.is_file()
     agents_missing = not agents_block_exists(plan)
-    if not (force or package_missing or db_missing or mcp_missing or agents_missing or doctor):
+    if not (force or package_missing or db_missing or agents_missing or doctor):
         return
     if force or package_missing:
         print_plan(plan, what_if=False, force=force, doctor=doctor)
@@ -508,13 +515,8 @@ def ensure_project_ready(plan: ProjectInstallPlan, force: bool, doctor: bool) ->
         run_brain_command(plan, ["init"])
     if doctor:
         run_brain_command(plan, ["doctor"])
-    if mcp_missing or force or package_missing:
-        write_mcp_registration(plan)
     if agents_missing or force or package_missing:
         write_agents_file(plan)
-    deploy_builtin_skills(plan)
-    if plan.register_agents:
-        register_agent_configs(plan)
     record_deploy(plan)
 
 
@@ -560,6 +562,50 @@ def run_from_args(args: argparse.Namespace) -> int:
         require_python()
         plan = build_plan(args)
         return run_plan(plan, what_if=args.what_if, force=args.force, doctor=args.doctor)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def build_install_skills_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=f"{CANONICAL_INSTALLER_NAME} install-skills",
+        description="Install or refresh the Local AI Brain skills without registering an MCP startup server.",
+    )
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Project root. Project scope defaults to the current directory; main scope defaults to ~/.agents/local-ai-brain.",
+    )
+    parser.add_argument("--source-dir", default="", help="Source folder for this installer. Defaults to the commander folder.")
+    parser.add_argument("--brain-scope", choices=["main", "project"], default="", help="Skill target scope.")
+    parser.add_argument("--mcp-name", default="", help="Deprecated compatibility option; skills use commander commands, not MCP startup.")
+    parser.add_argument("--platform", choices=["windows", "macos", "linux"], default="", help="Override platform detection.")
+    return parser
+
+
+def run_install_skills_from_args(args: argparse.Namespace) -> int:
+    try:
+        require_python()
+        plan = build_plan(
+            argparse.Namespace(
+                project_root=args.project_root,
+                source_dir=args.source_dir,
+                brain_scope=args.brain_scope,
+                mcp_name=args.mcp_name,
+                platform=args.platform,
+                what_if=False,
+                force=False,
+                doctor=False,
+                no_register_agents=True,
+            )
+        )
+        deploy_builtin_skills(plan)
+        record_deploy(plan)
+        print("Installed Local AI Brain skills:")
+        for target in builtin_skill_targets(plan):
+            print(f"  {target}")
+        return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -780,7 +826,7 @@ def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
     brain_scope = resolve_brain_scope(getattr(args, "brain_scope", ""))
     project_root = resolve_install_root(getattr(args, "project_root", "."), brain_scope)
     source_root = Path(args.source_dir).expanduser().resolve() if args.source_dir else Path(__file__).resolve().parent
-    register_agents = not bool(getattr(args, "no_register_agents", False))
+    register_agents = False
     source_package_dir = find_source_package(source_root)
     container_dir = (project_root / LAIB_CONTAINER_DIR).resolve()
     scripts_dir = (container_dir / "scripts").resolve()
@@ -876,11 +922,8 @@ def detect_platform() -> str:
 def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool) -> int:
     print_plan(plan, what_if=what_if, force=force, doctor=doctor)
     if what_if:
-        if plan.register_agents:
-            print("WOULD register MCP server for Codex, Copilot CLI, OpenCode, and Claude Code (best effort).")
-        else:
-            print("SKIP register MCP agent configs (--no-register-agents).")
-        print("WOULD deploy built-in SKILL.md files for Local AI Brain.")
+        print("SKIP MCP agent config registration; Local AI Brain is skill/CLI only by default.")
+        print(f'WOULD allow explicit skill install with: python "{plan.project_root / CANONICAL_INSTALLER_NAME}" install-skills')
         return 0
 
     plan.project_root.mkdir(parents=True, exist_ok=True)
@@ -891,11 +934,7 @@ def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool)
     run_brain_command(plan, ["init"])
     if doctor:
         run_brain_command(plan, ["doctor"])
-    write_mcp_registration(plan)
     write_agents_file(plan)
-    deploy_builtin_skills(plan)
-    if plan.register_agents:
-        register_agent_configs(plan)
     record_deploy(plan)
     print_next_steps(plan)
     return 0
@@ -917,14 +956,11 @@ def print_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: boo
     print(f"plans: {plan.plans_dir}")
     print(f"work_file_naming: {WORK_FILE_PATTERN} (example: {WORK_FILE_EXAMPLE})")
     print(f"agents_file: {plan.agents_file}")
-    print(f"mcp_registry: {plan.mcp_registry_path}")
-    print(f"mcp_adapter: {plan.mcp_adapter_path}")
-    print(f"mcp_name: {plan.mcp_tool_prefix}")
     if plan.brain_scope == "main":
         for path in user_profile_brain_areas():
             status = "present" if path.exists() else "candidate"
             print(f"main_brain_area: {path.resolve()} ({status})")
-    print(f"register_agents: {plan.register_agents}")
+    print("register_agents: false (MCP startup registration disabled)")
     print(f"force: {force}")
     print(f"doctor: {doctor}")
     operations = [
@@ -932,8 +968,8 @@ def print_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: boo
         f"create {scope_description} runtime folder",
         f"run python -m local_ai_brain init with LOCAL_AI_BRAIN_HOME set to the {scope_description} folder",
         f"ensure plans folder exists and document readable work filenames like {WORK_FILE_EXAMPLE}",
-        "create/update local MCP adapter and registration manifest",
-        "append or refresh one Local AI Brain block in agents.md",
+        "append or refresh one Local AI Brain CLI block in agents.md",
+        "leave MCP startup configs untouched",
     ]
     if not same_path(plan.source_package_dir, plan.package_dir):
         operations[0] = "copy local_ai_brain package into scripts/local_ai_brain"
@@ -1129,15 +1165,12 @@ def agents_block(plan: ProjectInstallPlan) -> str:
     database = command_path(plan.db_path)
     artifacts = command_path(plan.artifacts_dir)
     plans = command_path(plan.plans_dir)
-    registry = command_path(plan.mcp_registry_path)
-    adapter = command_path(plan.mcp_adapter_path)
     main_brain_areas = main_brain_areas_block(plan)
-    tool_names = "\n".join(f"- `{mcp_tool_name(plan, action)}`" for action, _description, _permission in LOCAL_AI_BRAIN_ACTIONS)
     scope_label = "Main" if plan.brain_scope == "main" else "Project"
     scope_sentence = (
-        "This is the agents main Local AI Brain. Register MCP as `localaibrain` without a project prefix."
+        "This is the agents main Local AI Brain. Use the Local AI Brain skills or commander CLI."
         if plan.brain_scope == "main"
-        else "This project has its own Local AI Brain. Register MCP with this project's prefixed tool namespace."
+        else "This project has its own Local AI Brain. Use the Local AI Brain skills or commander CLI."
     )
     return f"""{AGENTS_BLOCK_START}
 ## {scope_label} Local AI Brain
@@ -1147,7 +1180,6 @@ Use it before non-trivial repo, debugging, UI, deployment, planning, or multi-ag
 
 - Project root: `{project}`
 - Brain scope: `{plan.brain_scope}`
-- MCP name: `{plan.mcp_tool_prefix}`
 - Commander: `{commander}`
 - Python module path: `{scripts}`
 - Local AI Brain package: `{package}`
@@ -1155,8 +1187,6 @@ Use it before non-trivial repo, debugging, UI, deployment, planning, or multi-ag
 - SQLite database path: `{database}`
 - Artifact path: `{artifacts}`
 - Plans path: `{plans}`
-- Local MCP registration: `{registry}`
-- Local MCP stdio adapter: `{adapter}`
 {main_brain_areas}
 
 Use Python only. Do not write SQLite directly.
@@ -1166,7 +1196,7 @@ Agent software and model allocation:
 - Keep a clear divide between model roles. Operator and Engineer lanes are lightweight coding agents for repo reads, local edits, tests, terminal work, MCP calls, and linear implementation. Larger architecture models such as GPT-5.5 are for innovation, system design, product architecture, strategy, and reviewing the shape of major decisions.
 - Do not spend large architecture models on routine coding work when Copilot CLI, OpenCode, Codex coding lanes, or Claude Code can execute the task through their tools.
 - When orchestrating multiple agents, assign linear implementation tickets to Operator/Engineer agents first, then escalate only the design question, architecture tradeoff, or unresolved blocker to a larger architecture model.
-- Agents should call Local AI Brain through the registered MCP tools first. Use the commander CLI below as the fallback when the host agent cannot reach MCP.
+- Local AI Brain MCP startup registration is intentionally disabled. Use the skills or commander CLI below.
 
 Full access command labels for agent software:
 
@@ -1189,6 +1219,7 @@ Project commander:
 
 ```powershell
 python "{commander}" deploy --brain-scope {plan.brain_scope}
+python "{commander}" install-skills --brain-scope {plan.brain_scope}
 python "{commander}" run --brain-scope {plan.brain_scope} context-pack --repo "{project}" --query "<topic>" --limit 5
 python "{commander}" run --brain-scope {plan.brain_scope} search --repo "{project}" --query "<topic>" --limit 10
 python "{commander}" run --brain-scope {plan.brain_scope} doctor
@@ -1231,9 +1262,6 @@ For token conservation, prefer `context-pack --limit 5` with a specific `--query
 For proof that the brain helped, start a proof session before the first lookup, set `LOCAL_AI_BRAIN_PROOF_SESSION` to the returned id, classify useful/stale/irrelevant hits in `proof-finish`, and check `proof-report` before making speed or token-savings claims.
 For deterministic maintenance, run `python -m local_ai_brain optimize --apply`; it finds the project `brain.db`, backs it up, removes transient cleanup candidates, rebuilds FTS, and compacts SQLite.
 
-Local MCP tool names registered for this project:
-
-{tool_names}
 {AGENTS_BLOCK_END}"""
 
 
@@ -1262,8 +1290,7 @@ def print_next_steps(plan: ProjectInstallPlan) -> None:
     print(f"  commander: {plan.project_root / CANONICAL_INSTALLER_NAME}")
     print(f"  agents.md: {plan.agents_file}")
     print(f"  database: {plan.db_path}")
-    print(f"  local MCP registry: {plan.mcp_registry_path}")
-    print(f"  local MCP adapter: {plan.mcp_adapter_path}")
+    print(f'  skills: python "{plan.project_root / CANONICAL_INSTALLER_NAME}" install-skills')
     print("")
     print("Commander:")
     print(f'  python "{plan.project_root / CANONICAL_INSTALLER_NAME}" run context-pack --query "your topic"')
@@ -1594,13 +1621,13 @@ def guessed_candidate(root: Path, scope: str, mcp_name: str) -> ResolvedBrain:
 def skill_template_source(skill_name: str, plan: ProjectInstallPlan) -> str:
     if skill_name == "Ourstuff LAIB Optimize Main":
         action = "optimize-main"
-        description = "Optimize the main Local AI Brain through MCP first, with commander CLI fallback."
+        description = "Optimize the main Local AI Brain through the commander CLI."
     elif skill_name == "Ourstuff LAIB Optimize Project":
         action = "optimize-project"
-        description = "Optimize the nearest or most relevant project Local AI Brain through MCP first, with commander CLI fallback."
+        description = "Optimize the nearest or most relevant project Local AI Brain through the commander CLI."
     else:
         action = "index"
-        description = "Rebuild the nearest Local AI Brain index through MCP first, with commander CLI fallback."
+        description = "Rebuild the nearest Local AI Brain index through the commander CLI."
     return (
         "---\n"
         f"name: {skill_name}\n"
@@ -1675,11 +1702,7 @@ def skill_openai_yaml(skill_name: str, plan: ProjectInstallPlan) -> str:
 policy:
   allow_implicit_invocation: true
 dependencies:
-  tools:
-    - type: "mcp"
-      value: "{plan.mcp_tool_prefix}"
-      description: "Local AI Brain MCP server"
-      transport: "stdio"
+  tools: []
 metadata:
   managed_by: "{LAIB_MANAGED_MARKER}"
 """
@@ -1754,6 +1777,7 @@ def register_codex_config(plan: ProjectInstallPlan) -> None:
         f"command = {toml_string(str(plan.python_executable))}\n"
         f"args = [{toml_string(str(plan.mcp_adapter_path))}]\n"
         f"cwd = {toml_string(str(plan.project_root))}\n"
+        "startup_timeout_sec = 10\n"
         f'[mcp_servers."{quoted_name}".env]\n'
         f"PYTHONPATH = {toml_string(str(plan.scripts_dir))}\n"
         f"LOCAL_AI_BRAIN_HOME = {toml_string(str(plan.data_dir))}\n"
