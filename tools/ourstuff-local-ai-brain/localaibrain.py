@@ -17,6 +17,7 @@ from typing import Any
 
 MIN_PYTHON = (3, 10)
 CANONICAL_INSTALLER_NAME = "localaibrain.py"
+LAIB_CONTAINER_DIR = "localaibrain"
 AGENTS_BLOCK_START = "<!-- LOCAL_AI_BRAIN_PROJECT_START -->"
 AGENTS_BLOCK_END = "<!-- LOCAL_AI_BRAIN_PROJECT_END -->"
 MCP_REGISTRY_NAME = "local-ai-brain-tools.json"
@@ -35,7 +36,7 @@ BUILTIN_SKILL_SLUGS = {
 }
 WORK_FILE_PATTERN = "NNN_slug.ext"
 WORK_FILE_EXAMPLE = "001_file-use-name.md"
-WORK_FILE_EXCLUDED_DIRS = ("scripts", "artifacts", "archive", "brain", "mcp", "meetings", "tools")
+WORK_FILE_EXCLUDED_DIRS = ("localaibrain", "scripts", "artifacts", "archive", "brain", "mcp", "meetings", "tools")
 LOCAL_AI_BRAIN_ACTIONS = [
     ("doctor", "Run Local AI Brain doctor for this project.", "read_only"),
     ("context-pack", "Return a compact project Local AI Brain context pack.", "read_only"),
@@ -127,7 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--menu", action="store_true", help="Open the interactive terminal menu.")
-    parser.add_argument("--project-root", default=".", help="Project root to initialize. Defaults to the current directory.")
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Project root to initialize. Project installs default to the current directory; main installs default to ~/.agents/local-ai-brain.",
+    )
     parser.add_argument(
         "--source-dir",
         default="",
@@ -487,6 +492,7 @@ def require_existing_project_brain(plan: ProjectInstallPlan) -> None:
 
 
 def ensure_project_ready(plan: ProjectInstallPlan, force: bool, doctor: bool) -> None:
+    migrate_old_scattered_install(plan)
     package_missing = not (plan.package_dir / "__main__.py").is_file()
     db_missing = not plan.db_path.is_file()
     mcp_missing = not plan.mcp_registry_path.is_file() or not plan.mcp_adapter_path.is_file()
@@ -564,7 +570,11 @@ def build_rollback_parser() -> argparse.ArgumentParser:
         prog=f"{CANONICAL_INSTALLER_NAME} rollback",
         description="Remove project-local Local AI Brain generated files.",
     )
-    parser.add_argument("--project-root", default=".", help="Project root. Defaults to the current directory.")
+    parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Project root. Project scope defaults to the current directory; main scope defaults to ~/.agents/local-ai-brain.",
+    )
     parser.add_argument("--source-dir", default="", help="Source folder for this installer. Defaults to the commander folder.")
     parser.add_argument("--what-if", action="store_true", help="Show what would happen without removing files.")
     parser.add_argument("--yes", action="store_true", help="Confirm destructive rollback without an interactive prompt.")
@@ -605,10 +615,16 @@ def run_resolve_brain(args: argparse.Namespace) -> int:
         "scope": resolved.brain_scope,
         "root": str(resolved.project_root),
         "mcp_name": resolved.mcp_tool_prefix,
+        "container": str(resolved.container_dir),
+        "package_dir": str(resolved.package_dir),
+        "mcp_adapter": str(resolved.mcp_adapter_path),
+        "mcp_registry": str(resolved.mcp_registry_path),
         "scripts_dir": str(resolved.scripts_dir),
         "data_dir": str(resolved.data_dir),
         "db_path": str(resolved.db_path),
     }
+    if resolved.brain_scope == "main":
+        payload["main_brain_areas"] = [str(path.resolve()) for path in user_profile_brain_areas()]
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
@@ -761,15 +777,16 @@ def require_python() -> None:
 
 
 def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
-    project_root = Path(args.project_root).expanduser().resolve()
-    source_root = Path(args.source_dir).expanduser().resolve() if args.source_dir else Path(__file__).resolve().parent
     brain_scope = resolve_brain_scope(getattr(args, "brain_scope", ""))
+    project_root = resolve_install_root(getattr(args, "project_root", "."), brain_scope)
+    source_root = Path(args.source_dir).expanduser().resolve() if args.source_dir else Path(__file__).resolve().parent
     register_agents = not bool(getattr(args, "no_register_agents", False))
     source_package_dir = find_source_package(source_root)
-    scripts_dir = (project_root / "scripts").resolve()
+    container_dir = (project_root / LAIB_CONTAINER_DIR).resolve()
+    scripts_dir = (container_dir / "scripts").resolve()
     package_dir = (scripts_dir / "local_ai_brain").resolve()
-    data_dir = (project_root / "brain").resolve()
-    mcp_dir = (project_root / "mcp").resolve()
+    data_dir = (container_dir / "brain").resolve()
+    mcp_dir = container_dir / "mcp"
     explicit_mcp_name = str(getattr(args, "mcp_name", "") or "").strip()
     mcp_name = explicit_mcp_name or default_mcp_name(project_root, brain_scope)
     return ProjectInstallPlan(
@@ -783,7 +800,7 @@ def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
         data_dir=data_dir,
         db_path=data_dir / "brain.db",
         artifacts_dir=data_dir / "artifacts",
-        plans_dir=project_root / "plans",
+        plans_dir=container_dir / "plans",
         agents_file=find_agents_file(project_root),
         mcp_dir=mcp_dir,
         mcp_registry_path=mcp_dir / MCP_REGISTRY_NAME,
@@ -792,6 +809,30 @@ def build_plan(args: argparse.Namespace) -> ProjectInstallPlan:
         mcp_tool_prefix=mcp_name,
         register_agents=register_agents,
     )
+
+
+def migrate_old_scattered_install(plan: ProjectInstallPlan) -> None:
+    moves = (
+        (plan.project_root / "scripts", plan.scripts_dir, "scripts"),
+        (plan.project_root / "mcp", plan.mcp_dir, "MCP directory"),
+        (plan.project_root / "brain", plan.data_dir, "runtime data"),
+        (plan.project_root / "plans", plan.plans_dir, "plans"),
+    )
+    for source, destination, label in moves:
+        if not source.exists():
+            continue
+        if destination.exists():
+            print(f"WARN: existing destination for {label}, keeping both and skipping migration: {source} -> {destination}")
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+
+
+def resolve_install_root(value: str, brain_scope: str) -> Path:
+    text = str(value or "").strip()
+    if brain_scope == "main" and text in {"", "."}:
+        return (Path.home() / ".agents" / "local-ai-brain").resolve()
+    return Path(text or ".").expanduser().resolve()
 
 
 def resolve_brain_scope(value: str) -> str:
@@ -843,6 +884,7 @@ def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool)
         return 0
 
     plan.project_root.mkdir(parents=True, exist_ok=True)
+    migrate_old_scattered_install(plan)
     install_package(plan, force=force)
     plan.data_dir.mkdir(parents=True, exist_ok=True)
     plan.plans_dir.mkdir(parents=True, exist_ok=True)
@@ -861,6 +903,7 @@ def run_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool)
 
 def print_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: bool) -> None:
     mode = "WhatIf" if what_if else "Install"
+    scope_description = "main brain" if plan.brain_scope == "main" else "project brain"
     print(f"{mode}: {plan.brain_scope} Local AI Brain")
     print(f"platform: {plan.platform_name}")
     print(f"python: {plan.python_executable}")
@@ -877,13 +920,17 @@ def print_plan(plan: ProjectInstallPlan, what_if: bool, force: bool, doctor: boo
     print(f"mcp_registry: {plan.mcp_registry_path}")
     print(f"mcp_adapter: {plan.mcp_adapter_path}")
     print(f"mcp_name: {plan.mcp_tool_prefix}")
+    if plan.brain_scope == "main":
+        for path in user_profile_brain_areas():
+            status = "present" if path.exists() else "candidate"
+            print(f"main_brain_area: {path.resolve()} ({status})")
     print(f"register_agents: {plan.register_agents}")
     print(f"force: {force}")
     print(f"doctor: {doctor}")
     operations = [
         "ensure scripts/local_ai_brain exists",
-        "create project-local brain runtime folder",
-        "run python -m local_ai_brain init with LOCAL_AI_BRAIN_HOME set to the project brain folder",
+        f"create {scope_description} runtime folder",
+        f"run python -m local_ai_brain init with LOCAL_AI_BRAIN_HOME set to the {scope_description} folder",
         f"ensure plans folder exists and document readable work filenames like {WORK_FILE_EXAMPLE}",
         "create/update local MCP adapter and registration manifest",
         "append or refresh one Local AI Brain block in agents.md",
@@ -1084,6 +1131,7 @@ def agents_block(plan: ProjectInstallPlan) -> str:
     plans = command_path(plan.plans_dir)
     registry = command_path(plan.mcp_registry_path)
     adapter = command_path(plan.mcp_adapter_path)
+    main_brain_areas = main_brain_areas_block(plan)
     tool_names = "\n".join(f"- `{mcp_tool_name(plan, action)}`" for action, _description, _permission in LOCAL_AI_BRAIN_ACTIONS)
     scope_label = "Main" if plan.brain_scope == "main" else "Project"
     scope_sentence = (
@@ -1109,6 +1157,7 @@ Use it before non-trivial repo, debugging, UI, deployment, planning, or multi-ag
 - Plans path: `{plans}`
 - Local MCP registration: `{registry}`
 - Local MCP stdio adapter: `{adapter}`
+{main_brain_areas}
 
 Use Python only. Do not write SQLite directly.
 
@@ -1188,6 +1237,21 @@ Local MCP tool names registered for this project:
 {AGENTS_BLOCK_END}"""
 
 
+def main_brain_areas_block(plan: ProjectInstallPlan) -> str:
+    if plan.brain_scope != "main":
+        return ""
+    lines = ["", "Main brain areas detected under the user profile:"]
+    for path in user_profile_brain_areas():
+        status = "present" if path.exists() else "candidate"
+        lines.append(f"- `{command_path(path)}` ({status})")
+    return "\n".join(lines)
+
+
+def user_profile_brain_areas() -> list[Path]:
+    home = Path.home()
+    return [home / ".agents", home / ".codex", home / ".claude"]
+
+
 def command_path(path: Path) -> str:
     return str(path.resolve())
 
@@ -1228,10 +1292,12 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+INSTALL_CONTAINER = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = INSTALL_CONTAINER.parent
+SCRIPTS_DIR = INSTALL_CONTAINER / "scripts"
 os.environ["PYTHONPATH"] = str(SCRIPTS_DIR) + os.pathsep + os.environ.get("PYTHONPATH", "")
-os.environ["LOCAL_AI_BRAIN_HOME"] = str(PROJECT_ROOT / "brain")
+os.environ["LOCAL_AI_BRAIN_HOME"] = str(INSTALL_CONTAINER / "brain")
+os.environ["LOCAL_AI_BRAIN_PROJECT_ROOT"] = str(PROJECT_ROOT)
 os.environ["LOCAL_AI_BRAIN_MCP_TOOL_PREFIX"] = __TOOL_PREFIX__
 os.environ["LOCAL_AI_BRAIN_MCP_SCOPE_DESCRIPTION"] = __SCOPE_DESCRIPTION__
 if str(SCRIPTS_DIR) not in sys.path:
@@ -1253,6 +1319,10 @@ class ResolvedBrain:
     mcp_tool_prefix: str
     scripts_dir: Path
     data_dir: Path
+    package_dir: Path
+    container_dir: Path
+    mcp_adapter_path: Path
+    mcp_registry_path: Path
     db_path: Path
     python_executable: Path
 
@@ -1287,6 +1357,7 @@ def save_deploy_registry(registry: dict[str, Any]) -> None:
 
 
 def record_deploy(plan: ProjectInstallPlan) -> None:
+    container_dir = plan.project_root / LAIB_CONTAINER_DIR
     registry = load_deploy_registry()
     deploys = [entry for entry in registry.get("deploys", []) if isinstance(entry, dict)]
     now = now_iso_utc()
@@ -1295,12 +1366,16 @@ def record_deploy(plan: ProjectInstallPlan) -> None:
         "scope": plan.brain_scope,
         "root": str(plan.project_root),
         "mcp_name": plan.mcp_tool_prefix,
+        "container": str(container_dir),
+        "package": str(plan.package_dir),
         "adapter": str(plan.mcp_adapter_path),
         "registry": str(plan.mcp_registry_path),
         "deployed_skills": deployed_skills,
         "last_deployed": now,
         "last_used": now,
     }
+    if plan.brain_scope == "main":
+        entry["main_brain_areas"] = [str(path.resolve()) for path in user_profile_brain_areas()]
     updated = False
     for index, current in enumerate(deploys):
         if (
@@ -1443,17 +1518,54 @@ def resolve_recent_main_candidate(deploys: list[dict[str, Any]]) -> ResolvedBrai
     return candidate_from_registry(mains[0])
 
 
+def _coerce_entry_path(value: Any, project_root: Path) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return project_root / candidate
+
+
+def _container_from_entry(root: Path, entry: dict[str, Any]) -> Path:
+    container = _coerce_entry_path(entry.get("container"), root)
+    if container is not None:
+        return container
+    registry = _coerce_entry_path(entry.get("registry"), root)
+    if registry is not None:
+        if registry.name == MCP_REGISTRY_NAME:
+            if registry.parent.name == "mcp":
+                return registry.parent.parent
+            return registry.parent
+    adapter = _coerce_entry_path(entry.get("adapter"), root)
+    if adapter is not None:
+        if adapter.name == MCP_ADAPTER_NAME:
+            adapter_parent = adapter.parent
+            if adapter_parent.name == "scripts":
+                return adapter_parent.parent
+        return adapter.parent
+    return root
+
+
 def candidate_from_registry(entry: dict[str, Any]) -> ResolvedBrain:
     root = Path(str(entry.get("root", "."))).expanduser().resolve()
     scope = str(entry.get("scope", "project"))
     name = str(entry.get("mcp_name", default_mcp_name(root, scope)))
-    scripts_dir = root / "scripts"
-    data_dir = root / "brain"
+    container_dir = _container_from_entry(root, entry)
+    scripts_dir = container_dir / "scripts"
+    data_dir = container_dir / "brain"
     return ResolvedBrain(
         project_root=root,
         brain_scope=scope,
         mcp_tool_prefix=name,
         scripts_dir=scripts_dir,
+        package_dir=scripts_dir / "local_ai_brain",
+        container_dir=container_dir,
+        mcp_adapter_path=container_dir / "scripts" / MCP_ADAPTER_NAME,
+        mcp_registry_path=container_dir / "mcp" / MCP_REGISTRY_NAME,
         data_dir=data_dir,
         db_path=data_dir / "brain.db",
         python_executable=Path(sys.executable).resolve(),
@@ -1461,13 +1573,18 @@ def candidate_from_registry(entry: dict[str, Any]) -> ResolvedBrain:
 
 
 def guessed_candidate(root: Path, scope: str, mcp_name: str) -> ResolvedBrain:
-    scripts_dir = root / "scripts"
-    data_dir = root / "brain"
+    container_dir = root / LAIB_CONTAINER_DIR
+    scripts_dir = container_dir / "scripts"
+    data_dir = container_dir / "brain"
     return ResolvedBrain(
         project_root=root,
         brain_scope=scope,
         mcp_tool_prefix=mcp_name,
         scripts_dir=scripts_dir,
+        package_dir=scripts_dir / "local_ai_brain",
+        container_dir=container_dir,
+        mcp_adapter_path=scripts_dir / MCP_ADAPTER_NAME,
+        mcp_registry_path=container_dir / "mcp" / MCP_REGISTRY_NAME,
         data_dir=data_dir,
         db_path=data_dir / "brain.db",
         python_executable=Path(sys.executable).resolve(),
