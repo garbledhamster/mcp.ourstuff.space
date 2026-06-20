@@ -893,6 +893,7 @@ def find_source_package(source_root: Path) -> Path:
     candidates = [
         source_root / "local_ai_brain",
         source_root / "scripts" / "local_ai_brain",
+        source_root / LAIB_CONTAINER_DIR / "scripts" / "local_ai_brain",
         source_root / "tools" / "local_ai_brain",
         source_root / "tools" / "local-ai-brain" / "local_ai_brain",
     ]

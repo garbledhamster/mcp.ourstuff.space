@@ -1,0 +1,6 @@
+---
+name: linear-thinking-orchestrator
+description: Run 3 subagents in parallel (plan/code, test/validate, review/report)
+---
+
+Call a trio of production coding subagents down the same lane. While GPT-5.5 5h usage is below 30 percent, use the last flagship coding model with high thinking effort. When GPT-5.5 5h usage reaches or exceeds 30 percent and the runtime or user exposes that usage state, keep GPT-5.5 as the parent orchestrator and run coding workers through OpenCode agent `blackbox-fast-coder`, model `blackbox-ollama/qwen2.5-coder:7b` (`Blackbox Qwen2.5 Coder 7B`). Use `opencode run --agent blackbox-fast-coder --model blackbox-ollama/qwen2.5-coder:7b "<bounded worker prompt>"`. If OpenCode Blackbox auth is missing or the model call returns `401`, stop and ask for Odyssey API credentials before dispatching workers. One subagent plans/codes, one subagent tests/validates, one subagent reviews/reports all subagents handoff to you.  You are the orchestrator that has the master plan for what I want executed, each agent (including yourslef) must be less than 140k (smart window) in their context window before they write a handoff for the next subagent and save it to the LOCAL OS TEMP DIRECTORY (not the project directory or in RAM) to maintain a worklog for each subagent to continue from it's 140k context window.  This is a scalable and loopable skill.
